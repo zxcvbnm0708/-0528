@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>火工品库房看板</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/chart.umd.min.js"></script>
+</head>
+<body>
+
+<div class="container">
+
+    <div class="header">
+        <div>
+            <h1>火工品库房看板</h1>
+            <p>火工品库房看板</p>
+        </div>
+        <div class="time-box">
+            <div>数据更新时间</div>
+            <strong id="updateTime">--</strong>
+        </div>
+    </div>
+
+    <div id="errorBox" class="error-box" style="display:none;"></div>
+
+    <div class="cards">
+        <div class="card">
+            <div class="card-title">库存总金额</div>
+            <div class="card-value" id="totalAmount">0</div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">库存总当量（kg）</div>
+            <div class="card-value" id="totalEquivalent">0</div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">产品总数量</div>
+            <div class="card-value" id="totalQuantity">0</div>
+        </div>
+    </div>
+
+    <div class="filter-panel">
+        <input type="text" id="keyword" placeholder="搜索产品名称 / 产品图号">
+
+        <select id="warehouse1">
+            <option value="成品">成品</option>
+        </select>
+
+        <select id="warehouse2">
+            <option value="">全部库房名称2</option>
+        </select>
+
+        <select id="warehouse3">
+            <option value="">全部库房名称3</option>
+        </select>
+
+        <button onclick="loadData()">查询</button>
+        <button onclick="resetFilters()">重置为成品库</button>
+    </div>
+
+    <div class="section-title">一、库房大类库存数量与金额分析</div>
+
+    <div class="explosive-chart-grid">
+        <div class="chart-card full-chart">
+            <h3>火工库房当量统计（KG）</h3>
+            <canvas id="explosiveEquivalentChart"></canvas>
+        </div>
+
+        <div class="chart-card full-chart">
+            <h3>入库当量预测（KG）</h3>
+            <canvas id="predictionChart"></canvas>
+        </div>
+    </div>
+
+    <div id="explosiveDetailPanel" class="detail-panel" style="display:none;">
+        <div class="detail-header">
+            <h3 id="explosiveDetailTitle">库房当量明细</h3>
+            <button type="button" onclick="hideExplosiveDetail()">关闭</button>
+        </div>
+
+        <div id="layoutViewer" class="layout-viewer" style="display:none;"></div>
+
+        <div class="detail-table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>序号</th>
+                    <th>产品名称</th>
+                    <th>产品图号</th>
+                    <th>数量</th>
+                    <th>单位当量(g)</th>
+                    <th>产品当量(t)</th>
+                    <th>来源</th>
+                    <th>入库日期</th>
+                    <th>库房名称2</th>
+                    <th>库房名称3</th>
+                    <th>库房名称4</th>
+                </tr>
+                </thead>
+                <tbody id="equivalentDetailTable"></tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+
+<script>
+let charts = {};
+let latestExplosiveData = [];
+
+function formatNumber(num, decimals = 2) {
+    const value = Number(num || 0);
+    return value.toLocaleString(undefined, {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals
+    });
+}
+
+function formatInteger(num) {
+    return Number(num || 0).toLocaleString();
+}
+
+function destroyChart(id) {
+    try {
+        if (charts[id]) {
+            charts[id].destroy();
+            delete charts[id];
+        }
+    } catch (e) {
+        console.warn("销毁图表失败：", id, e);
+        delete charts[id];
+    }
+}
+
+/* 普通柱状图 */
+function renderBarChart(id, labels, values, labelName, valueUnit = "normal") {
+    destroyChart(id);
+
+    labels = Array.isArray(labels) ? labels : [];
+    values = Array.isArray(values) ? values : [];
+
+    const canvas = document.getElementById(id);
+
+    if (!canvas) {
+        console.warn("未找到柱状图 canvas：", id);
+        return;
+    }
+
+    const maxValue = Math.max(1, ...values);
+
+    const totalLabelPlugin = {
+        id: "barTotalLabelPlugin_" + id,
+        afterDatasetsDraw(chart) {
+            const ctx = chart.ctx;
+            const xScale = chart.scales.x;
+            const yScale = chart.scales.y;
+
+            ctx.save();
+            ctx.font = "bold 12px Microsoft YaHei";
+            ctx.fillStyle = "#111827";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "bottom";
+
+            values.forEach((value, index) => {
+                value = Number(value || 0);
+                if (value === 0) return;
+
+                const x = xScale.getPixelForValue(index);
+                const y = yScale.getPixelForValue(value);
+
+                let text = "";
+                if (valueUnit === "yi") {
+                    text = value.toFixed(2);
+                } else {
+                    text = value.toLocaleString();
+                }
+
+                ctx.fillText(text, x, y - 6);
+            });
+
+            ctx.restore();
+        }
+    };
+
+    charts[id] = new Chart(canvas, {
+        type: "bar",
+        data: {
+            labels: labels,
+            datasets: [{
+                label: labelName,
+                data: values
+            }]
+        },
+        plugins: [totalLabelPlugin],
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            layout: {
+                padding: {
+                    top: 32
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const value = Number(context.raw || 0);
+                            if (valueUnit === "yi") {
+                                return labelName + "：" + value.toFixed(4) + "亿元";
+                            }
+                            return labelName + "：" + value.toLocaleString();
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: {
+                        autoSkip: false,
+                        maxRotation: 45,
+                        minRotation: 0
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    suggestedMax: maxValue * 1.15,
+                    title: {
+                        display: true,
+                        text: labelName
+                    },
+                    ticks: {
+                        callback: function(value) {
+                            if (valueUnit === "yi") {
+                                return Number(value).toFixed(2);
+                            }
+                            return Number(value).toLocaleString();
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/* 堆叠柱状图：柱子内部按1库/2库区分，柱子顶部只显示总值 */
+function renderStackedBarChart(id, labels, datasets, yTitle, valueUnit = "normal") {
+    destroyChart(id);
+
+    labels = Array.isArray(labels) ? labels : [];
+    datasets = Array.isArray(datasets) ? datasets : [];
+
+    const canvas = document.getElementById(id);
+
+    if (!canvas) {
+        console.warn("未找到堆叠柱状图 canvas：", id);
+        return;
+    }
+
+    const totals = labels.map((_, index) => {
+        let total = 0;
+        datasets.forEach(dataset => {
+            total += Number(dataset.data[index] || 0);
+        });
+        return total;
+    });
+
+    const maxTotal = Math.max(1, ...totals);
+
+    const totalLabelPlugin = {
+        id: "totalLabelPlugin_" + id,
+        afterDatasetsDraw(chart) {
+            const ctx = chart.ctx;
+            const xScale = chart.scales.x;
+            const yScale = chart.scales.y;
+
+            ctx.save();
+            ctx.font = "bold 13px Microsoft YaHei";
+            ctx.fillStyle = "#111827";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "bottom";
+
+            totals.forEach((total, index) => {
+                if (total === 0) return;
+
+                let text = "";
+                if (valueUnit === "yi") {
+                    text = total.toFixed(2) + "亿";
+                } else {
+                    text = Math.round(total).toLocaleString();
+                }
+
+                const x = xScale.getPixelForValue(index);
+                const y = yScale.getPixelForValue(total);
+
+                ctx.fillText(text, x, y - 6);
+            });
+
+            ctx.restore();
+        }
+    };
+
+    charts[id] = new Chart(canvas, {
+        type: "bar",
+        data: {
+            labels: labels,
+            datasets: datasets
+        },
+        plugins: [totalLabelPlugin],
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            layout: {
+                padding: {
+                    top: 36
+                }
+            },
+            plugins: {
+                legend: {
+                    display: true
+                },
+                tooltip: {
+                    mode: "index",
+                    intersect: false,
+                    callbacks: {
+                        label: function(context) {
+                            const value = Number(context.raw || 0);
+
+                            if (valueUnit === "yi") {
+                                return context.dataset.label + "：" + value.toFixed(4) + "亿元";
+                            }
+
+                            return context.dataset.label + "：" + value.toLocaleString();
+                        },
+                        footer: function(tooltipItems) {
+                            let total = 0;
+
+                            tooltipItems.forEach(item => {
+                                total += Number(item.raw || 0);
+                            });
+
+                            if (valueUnit === "yi") {
+                                return "合计：" + total.toFixed(4) + "亿元";
+                            }
+
+                            return "合计：" + total.toLocaleString();
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    stacked: true,
+                    ticks: {
+                        autoSkip: false,
+                        maxRotation: 0,
+                        minRotation: 0
+                    }
+                },
+                y: {
+                    stacked: true,
+                    beginAtZero: true,
+                    suggestedMax: maxTotal * 1.18,
+                    title: {
+                        display: true,
+                        text: yTitle
+                    },
+                    ticks: {
+                        callback: function(value) {
+                            if (valueUnit === "yi") {
+                                return Number(value).toFixed(2);
+                            }
+                            return Number(value).toLocaleString();
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/* 火工库当量 + 警戒值图 */
+function renderExplosiveEquivalentChart(id, explosiveData) {
+    destroyChart(id);
+
+    explosiveData = Array.isArray(explosiveData) ? explosiveData : [];
+    latestExplosiveData = explosiveData;
+
+    const labels = explosiveData.map(item => item["分类名称"]);
+    const actualValues = explosiveData.map(item => Number(item["产品当量kg"] || 0));
+    const normalValues = explosiveData.map(item => Number(item["普通产品当量kg"] || 0));
+    const hongweiValues = explosiveData.map(item => Number(item["宏伟航空器当量kg"] || 0));
+    const limitValues = explosiveData.map(item => Number(item["警戒值kg"] || 0));
+    const warningValues = explosiveData.map(item => Number(item["百分之九十警戒值kg"] || 0));
+
+    const normalColors = explosiveData.map(item => {
+        const actual = Number(item["产品当量kg"] || 0);
+        const warning = Number(item["百分之九十警戒值kg"] || 0);
+
+        if (warning > 0 && actual >= warning) {
+            return "#DC2626";
+        }
+
+        return "#2563EB";
+    });
+
+    const hongweiColors = explosiveData.map(() => "#F59E0B");
+
+    const maxValue = Math.max(1, ...limitValues, ...actualValues);
+
+    const canvas = document.getElementById(id);
+
+    if (!canvas) {
+        console.warn("未找到火工当量图 canvas：", id);
+        return;
+    }
+
+    const explosiveLabelPlugin = {
+        id: "explosiveLabelPlugin_" + id,
+        afterDatasetsDraw(chart) {
+            const ctx = chart.ctx;
+            const xScale = chart.scales.x;
+            const yScale = chart.scales.y;
+
+            ctx.save();
+
+            labels.forEach((label, index) => {
+                const actual = actualValues[index] || 0;
+                const warning = warningValues[index] || 0;
+
+                const x = xScale.getPixelForValue(index);
+
+                if (actual > 0) {
+                    const yActual = yScale.getPixelForValue(actual);
+
+                    ctx.font = "bold 13px Microsoft YaHei";
+                    ctx.fillStyle = actual >= warning && warning > 0 ? "#DC2626" : "#111827";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "bottom";
+                    ctx.fillText(actual.toFixed(2) + "kg", x, yActual - 6);
+                }
+
+                if (warning > 0) {
+                    const yWarning = yScale.getPixelForValue(warning);
+
+                    ctx.strokeStyle = "#DC2626";
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([6, 4]);
+
+                    ctx.beginPath();
+                    ctx.moveTo(x - 30, yWarning);
+                    ctx.lineTo(x + 30, yWarning);
+                    ctx.stroke();
+
+                    ctx.setLineDash([]);
+
+                    ctx.font = "11px Microsoft YaHei";
+                    ctx.fillStyle = "#DC2626";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "bottom";
+                    ctx.fillText("90%", x, yWarning - 3);
+                }
+            });
+
+            ctx.restore();
+        }
+    };
+
+    charts[id] = new Chart(canvas, {
+        type: "bar",
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: "警戒值上限（kg）",
+                    data: limitValues,
+                    backgroundColor: "rgba(255,255,255,0)",
+                    borderColor: "#9CA3AF",
+                    borderWidth: 2,
+                    borderSkipped: false,
+                    grouped: false,
+                    barPercentage: 0.78,
+                    categoryPercentage: 0.78
+                },
+                {
+                    label: "普通产品当量（kg）",
+                    data: normalValues,
+                    backgroundColor: normalColors,
+                    borderColor: normalColors,
+                    stack: "actual",
+                    borderWidth: 1,
+                    grouped: false,
+                    barPercentage: 0.52,
+                    categoryPercentage: 0.78
+                },
+                {
+                    label: "宏伟航空器当量（kg）",
+                    data: hongweiValues,
+                    backgroundColor: hongweiColors,
+                    borderColor: hongweiColors,
+                    stack: "actual",
+                    borderWidth: 1,
+                    grouped: false,
+                    barPercentage: 0.52,
+                    categoryPercentage: 0.78
+                }
+            ]
+        },
+        plugins: [explosiveLabelPlugin],
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            layout: {
+                padding: {
+                    top: 42
+                }
+            },
+            plugins: {
+                legend: {
+                    display: true
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const index = context.dataIndex;
+                            const actual = actualValues[index] || 0;
+                            const normal = normalValues[index] || 0;
+                            const hongwei = hongweiValues[index] || 0;
+                            const limit = limitValues[index] || 0;
+                            const warning = warningValues[index] || 0;
+
+                            if (context.dataset.label !== "警戒值上限（kg）") {
+                                return [
+                                    "实际当量：" + actual.toFixed(2) + "kg",
+                                    "普通产品：" + normal.toFixed(2) + "kg",
+                                    "宏伟航空器：" + hongwei.toFixed(2) + "kg",
+                                    "90%警戒线：" + warning.toFixed(2) + "kg",
+                                    "警戒值上限：" + limit.toFixed(2) + "kg"
+                                ];
+                            }
+
+                            return "警戒值上限：" + limit.toFixed(2) + "kg";
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    stacked: true,
+                    ticks: {
+                        autoSkip: false,
+                        maxRotation: 0,
+                        minRotation: 0
+                    }
+                },
+                y: {
+                    stacked: true,
+                    beginAtZero: true,
+                    suggestedMax: maxValue * 1.18,
+                    title: {
+                        display: true,
+                        text: "产品当量（kg）"
+                    },
+                    ticks: {
+                        callback: function(value) {
+                            return Number(value).toLocaleString() + "kg";
+                        }
+                    }
+                }
+            },
+            onClick: function(event, elements) {
+                if (!elements || elements.length === 0) {
+                    return;
+                }
+
+                const index = elements[0].index;
+                const item = latestExplosiveData[index];
+                if (item) {
+                    showExplosiveDetail(item);
+                }
+            },
+            onHover: function(event, elements) {
+                const target = event && event.native ? event.native.target : null;
+                if (target) {
+                    target.style.cursor = elements && elements.length ? "pointer" : "default";
+                }
+            }
+        }
+    });
+}
+
+function showExplosiveDetail(item) {
+    const panel = document.getElementById("explosiveDetailPanel");
+    const title = document.getElementById("explosiveDetailTitle");
+    const layoutViewer = document.getElementById("layoutViewer");
+    const tbody = document.getElementById("equivalentDetailTable");
+    const warehouseName = item["分类名称"] || "";
+    const details = Array.isArray(item["当量明细"]) ? item["当量明细"] : [];
+    const layout = item["布局图"];
+
+    title.innerText = warehouseName + " 库房当量明细";
+    panel.style.display = "block";
+
+    if (layout && layout.url) {
+        layoutViewer.style.display = "block";
+
+        if (layout.kind === "image") {
+            layoutViewer.innerHTML = `
+                <div class="layout-title">${layout.filename || "库房布局图"}</div>
+                <img src="${layout.url}" alt="${warehouseName}库房布局图">
+            `;
+        } else {
+            layoutViewer.innerHTML = `
+                <div class="layout-title">${layout.filename || "库房布局图"}</div>
+                <object data="${layout.url}" type="application/vnd.visio" class="layout-object">
+                    <div class="layout-fallback">
+                        当前浏览器不能直接预览该布局文件，请点击
+                        <a href="${layout.url}" target="_blank">打开 ${layout.filename || "布局图文件"}</a>
+                    </div>
+                </object>
+            `;
+        }
+    } else {
+        layoutViewer.style.display = "none";
+        layoutViewer.innerHTML = "";
+    }
+
+    tbody.innerHTML = "";
+
+    if (details.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="11" class="empty">该库房暂无当量明细</td></tr>`;
+    } else {
+        details.forEach(row => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td>${row["序号"] || ""}</td>
+                <td>${row["产品名称"] || ""}</td>
+                <td>${row["产品图号"] || ""}</td>
+                <td class="num">${formatInteger(row["产品数量"])}</td>
+                <td class="num">${formatNumber(row["产品单位当量（g）"], 2)}</td>
+                <td class="num">${formatNumber(row["产品当量（t）"], 6)}</td>
+                <td>${row["产品来源"] || ""}</td>
+                <td>${row["产品入库日期"] || ""}</td>
+                <td>${row["库房名称2"] || ""}</td>
+                <td>${row["库房名称3"] || ""}</td>
+                <td>${row["库房名称4"] || ""}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function hideExplosiveDetail() {
+    document.getElementById("explosiveDetailPanel").style.display = "none";
+}
+
+/* 折线图：不显示网格线，折点显示数字，不带“亿” */
+function renderLineChart(id, labels, values, labelName, lineColor) {
+    destroyChart(id);
+
+    labels = Array.isArray(labels) ? labels : [];
+    values = Array.isArray(values) ? values : [];
+
+    const canvas = document.getElementById(id);
+
+    if (!canvas) {
+        console.warn("未找到折线图 canvas：", id);
+        return;
+    }
+
+    const maxValue = Math.max(1, ...values);
+
+    const pointLabelPlugin = {
+        id: "pointLabelPlugin_" + id,
+        afterDatasetsDraw(chart) {
+            const ctx = chart.ctx;
+            const meta = chart.getDatasetMeta(0);
+
+            ctx.save();
+            ctx.font = "bold 12px Microsoft YaHei";
+            ctx.fillStyle = "#111827";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "bottom";
+
+            meta.data.forEach((point, index) => {
+                const value = Number(values[index] || 0);
+                if (value === 0) return;
+
+                ctx.fillText(value.toFixed(2), point.x, point.y - 8);
+            });
+
+            ctx.restore();
+        }
+    };
+
+    charts[id] = new Chart(canvas, {
+        type: "line",
+        data: {
+            labels: labels,
+            datasets: [{
+                label: labelName,
+                data: values,
+                borderColor: lineColor,
+                backgroundColor: lineColor,
+                borderWidth: 3,
+                pointRadius: 5,
+                pointHoverRadius: 7,
+                tension: 0.25,
+                fill: false
+            }]
+        },
+        plugins: [pointLabelPlugin],
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            layout: {
+                padding: {
+                    top: 36,
+                    left: 8,
+                    right: 20,
+                    bottom: 8
+                }
+            },
+            plugins: {
+                legend: {
+                    display: true
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const value = Number(context.raw || 0);
+                            return labelName + "：" + value.toFixed(2);
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    grid: {
+                        display: false
+                    },
+                    ticks: {
+                        autoSkip: false,
+                        maxRotation: 45,
+                        minRotation: 0
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    suggestedMax: maxValue * 1.18,
+                    grid: {
+                        display: false
+                    },
+                    title: {
+                        display: true,
+                        text: "金额（亿元）"
+                    },
+                    ticks: {
+                        callback: function(value) {
+                            return Number(value).toFixed(2);
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+function updateSelectOptions(selectId, options, defaultText, defaultValue = "") {
+    const select = document.getElementById(selectId);
+    const currentValue = select.value;
+
+    select.innerHTML = `<option value="${defaultValue}">${defaultText}</option>`;
+
+    if (!Array.isArray(options)) {
+        options = [];
+    }
+
+    options.forEach(item => {
+        if (item !== "") {
+            const option = document.createElement("option");
+            option.value = item;
+            option.textContent = item;
+            select.appendChild(option);
+        }
+    });
+
+    if ([...select.options].some(option => option.value === currentValue)) {
+        select.value = currentValue;
+    } else {
+        select.value = defaultValue;
+    }
+}
+
+function loadData() {
+    const keyword = document.getElementById("keyword").value;
+    const warehouse1 = document.getElementById("warehouse1").value;
+    const warehouse2 = document.getElementById("warehouse2").value;
+    const warehouse3 = document.getElementById("warehouse3").value;
+
+    const params = new URLSearchParams({
+        keyword: keyword,
+        warehouse1: warehouse1,
+        warehouse2: warehouse2,
+        warehouse3: warehouse3
+    });
+
+    fetch(`/api/inventory?${params.toString()}`)
+        .then(response => response.json())
+        .then(res => {
+            document.getElementById("updateTime").innerText = res.update_time || "--";
+
+            const errorBox = document.getElementById("errorBox");
+
+            if (!res.success) {
+                errorBox.style.display = "block";
+                errorBox.innerText = res.error || "数据读取失败";
+                renderModuleOneCharts([], [], []);
+                return;
+            } else {
+                errorBox.style.display = "none";
+            }
+
+            const summary = res.summary || {};
+            const filters = res.filters || {};
+            const chartsData = res.charts || {};
+
+            document.getElementById("totalAmount").innerText = formatNumber(summary.total_amount, 2);
+            document.getElementById("totalEquivalent").innerText = formatNumber(summary.total_equivalent, 2);
+            document.getElementById("totalQuantity").innerText = formatInteger(summary.total_quantity);
+
+            updateSelectOptions("warehouse1", filters.warehouse1_options || [], "成品", "成品");
+            updateSelectOptions("warehouse2", filters.warehouse2_options || [], "全部库房名称2", "");
+            updateSelectOptions("warehouse3", filters.warehouse3_options || [], "全部库房名称3", "");
+
+            renderModuleOneCharts(
+                chartsData.warehouse_stack_chart || [],
+                chartsData.explosive_equivalent_chart || [],
+                chartsData.prediction_chart || []
+            );
+
+        })
+        .catch(error => {
+            const errorBox = document.getElementById("errorBox");
+            errorBox.style.display = "block";
+            errorBox.innerText = "数据加载失败：" + error;
+        });
+}
+
+function renderModuleOneCharts(warehouseData, explosiveData, predictionData) {
+    warehouseData = Array.isArray(warehouseData) ? warehouseData : [];
+    explosiveData = Array.isArray(explosiveData) ? explosiveData : [];
+    predictionData = Array.isArray(predictionData) ? predictionData : [];
+
+    const labels = warehouseData.map(item => item["库房大类"]);
+
+    const quantityDatasets = [
+        {
+            label: "1库数量",
+            data: warehouseData.map(item => Number(item["数量_1库"] || 0))
+        },
+        {
+            label: "2库数量",
+            data: warehouseData.map(item => Number(item["数量_2库"] || 0))
+        }
+    ];
+
+    const amountDatasets = [
+        {
+            label: "1库金额",
+            data: warehouseData.map(item => Number(item["金额_1库"] || 0) / 100000000)
+        },
+        {
+            label: "2库金额",
+            data: warehouseData.map(item => Number(item["金额_2库"] || 0) / 100000000)
+        }
+    ];
+
+    const hasOtherQuantity = warehouseData.some(item => Number(item["数量_其他"] || 0) > 0);
+    const hasOtherAmount = warehouseData.some(item => Number(item["金额_其他"] || 0) > 0);
+
+    if (hasOtherQuantity) {
+        quantityDatasets.push({
+            label: "其他数量",
+            data: warehouseData.map(item => Number(item["数量_其他"] || 0))
+        });
+    }
+
+    if (hasOtherAmount) {
+        amountDatasets.push({
+            label: "其他金额",
+            data: warehouseData.map(item => Number(item["金额_其他"] || 0) / 100000000)
+        });
+    }
+
+    renderExplosiveEquivalentChart("explosiveEquivalentChart", explosiveData);
+    renderPredictionChart("predictionChart", predictionData, explosiveData);
+}
+
+function renderPredictionChart(id, predictionData, explosiveData) {
+    destroyChart(id);
+
+    predictionData = Array.isArray(predictionData) ? predictionData : [];
+    explosiveData = Array.isArray(explosiveData) ? explosiveData : [];
+
+    const targetWarehouses = ["208", "207", "205"];
+    const labels = [];
+    const currentValues = [];
+    const predictionValues = [];
+    const totalValues = [];
+    const limitValues = [];
+    const warningValues = [];
+    const junePredictionMap = {};
+    const equivalentMap = {};
+
+    predictionData.forEach(item => {
+        const warehouseName = String(item["库房名称"] || "").trim();
+        const months = Array.isArray(item["月份"]) ? item["月份"].map(month => String(month || "").trim()) : [];
+        const values = Array.isArray(item["预测当量kg"])
+            ? item["预测当量kg"].map(value => Number(value || 0))
+            : [];
+        let juneIndex = months.findIndex(month => month === "6月" || month === "六月" || month === "6");
+        if (juneIndex < 0) {
+            juneIndex = 0;
+        }
+
+        junePredictionMap[warehouseName] = Number(values[juneIndex] || 0);
+    });
+
+    explosiveData.forEach(item => {
+        const warehouseName = String(item["分类名称"] || "").trim();
+        equivalentMap[warehouseName] = {
+            current: Number(item["产品当量kg"] || 0),
+            limit: Number(item["警戒值kg"] || 0),
+            warning: Number(item["百分之九十警戒值kg"] || 0)
+        };
+    });
+
+    targetWarehouses.forEach(warehouseName => {
+        const equivalent = equivalentMap[warehouseName] || {};
+        const current = Number(equivalent.current || 0);
+        const prediction = Number(junePredictionMap[warehouseName] || 0);
+
+        labels.push(warehouseName + "库房");
+        currentValues.push(current);
+        predictionValues.push(prediction);
+        totalValues.push(current + prediction);
+        limitValues.push(Number(equivalent.limit || 0));
+        warningValues.push(Number(equivalent.warning || 0));
+    });
+
+    const allValues = totalValues.concat(limitValues).concat(warningValues);
+    const maxValue = Math.max(1, ...allValues);
+    const canvas = document.getElementById(id);
+
+    if (!canvas) {
+        console.warn("未找到预测柱状图 canvas：", id);
+        return;
+    }
+
+    const predictionBarLabelPlugin = {
+        id: "predictionBarLabelPlugin_" + id,
+        afterDatasetsDraw(chart) {
+            const ctx = chart.ctx;
+            const xScale = chart.scales.x;
+            const yScale = chart.scales.y;
+
+            ctx.save();
+
+            const limitMeta = chart.getDatasetMeta(0);
+            limitMeta.data.forEach((bar, index) => {
+                const limit = Number(limitValues[index] || 0);
+                if (limit <= 0) return;
+
+                const width = bar.width || 60;
+                const yLimit = yScale.getPixelForValue(limit);
+                const yBase = yScale.getPixelForValue(0);
+
+                ctx.strokeStyle = "#9CA3AF";
+                ctx.lineWidth = 2;
+                ctx.setLineDash([6, 4]);
+                ctx.strokeRect(bar.x - width / 2, yLimit, width, yBase - yLimit);
+                ctx.setLineDash([]);
+            });
+
+            labels.forEach((label, index) => {
+                const current = Number(currentValues[index] || 0);
+                const prediction = Number(predictionValues[index] || 0);
+                const total = Number(totalValues[index] || 0);
+                const warning = Number(warningValues[index] || 0);
+                const x = xScale.getPixelForValue(index);
+
+                if (current > 0) {
+                    const yCurrent = yScale.getPixelForValue(current);
+
+                    ctx.font = "bold 12px Microsoft YaHei";
+                    ctx.fillStyle = "#FFFFFF";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "top";
+                    ctx.fillText(current.toFixed(2) + "kg", x, yCurrent + 6);
+                }
+
+                if (prediction > 0) {
+                    const yTotal = yScale.getPixelForValue(total);
+
+                    ctx.font = "bold 12px Microsoft YaHei";
+                    ctx.fillStyle = "#B45309";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "bottom";
+                    ctx.fillText("6月+" + prediction.toFixed(2) + "kg", x, yTotal - 6);
+                }
+
+                if (warning > 0) {
+                    const yWarning = yScale.getPixelForValue(warning);
+
+                    ctx.strokeStyle = "#DC2626";
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([6, 4]);
+
+                    ctx.beginPath();
+                    ctx.moveTo(x - 30, yWarning);
+                    ctx.lineTo(x + 30, yWarning);
+                    ctx.stroke();
+
+                    ctx.setLineDash([]);
+
+                    ctx.font = "11px Microsoft YaHei";
+                    ctx.fillStyle = "#DC2626";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "bottom";
+                    ctx.fillText("90%", x, yWarning - 3);
+                }
+            });
+
+            ctx.restore();
+        }
+    };
+
+    charts[id] = new Chart(canvas, {
+        type: "bar",
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    type: "bar",
+                    label: "警戒值上限（kg）",
+                    data: limitValues,
+                    backgroundColor: "rgba(255,255,255,0)",
+                    borderColor: "rgba(255,255,255,0)",
+                    borderWidth: 0,
+                    borderSkipped: false,
+                    grouped: false,
+                    barPercentage: 0.78,
+                    categoryPercentage: 0.78
+                },
+                {
+                    type: "bar",
+                    label: "当前库存当量（kg）",
+                    data: currentValues,
+                    backgroundColor: "#2563EB",
+                    borderColor: "#1D4ED8",
+                    stack: "actual",
+                    borderWidth: 1,
+                    grouped: false,
+                    barPercentage: 0.52,
+                    categoryPercentage: 0.78
+                },
+                {
+                    type: "bar",
+                    label: "6月预测入库当量（kg）",
+                    data: predictionValues,
+                    backgroundColor: "#F59E0B",
+                    borderColor: "#D97706",
+                    stack: "actual",
+                    borderWidth: 1,
+                    grouped: false,
+                    barPercentage: 0.52,
+                    categoryPercentage: 0.78
+                }
+            ]
+        },
+        plugins: [predictionBarLabelPlugin],
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            layout: {
+                padding: {
+                    top: 36,
+                    left: 8,
+                    right: 20,
+                    bottom: 8
+                }
+            },
+            plugins: {
+                legend: {
+                    display: true
+                },
+                tooltip: {
+                    mode: "index",
+                    intersect: false,
+                    callbacks: {
+                        label: function(context) {
+                            const index = context.dataIndex;
+                            const current = Number(currentValues[index] || 0);
+                            const prediction = Number(predictionValues[index] || 0);
+                            const total = Number(totalValues[index] || 0);
+                            const limit = Number(limitValues[index] || 0);
+                            const warning = Number(warningValues[index] || 0);
+
+                            if (context.dataset.label === "警戒值上限（kg）") {
+                                return "警戒值上限：" + limit.toFixed(2) + "kg";
+                            }
+
+                            return [
+                                "当前库存当量：" + current.toFixed(2) + "kg",
+                                "6月预测入库：" + prediction.toFixed(2) + "kg",
+                                "6月预测后合计：" + total.toFixed(2) + "kg",
+                                "90%警戒线：" + warning.toFixed(2) + "kg",
+                                "警戒值上限：" + limit.toFixed(2) + "kg"
+                            ];
+                        },
+                        footer: function(tooltipItems) {
+                            const index = tooltipItems[0] ? tooltipItems[0].dataIndex : 0;
+                            return "6月预测后合计：" + Number(totalValues[index] || 0).toFixed(2) + "kg";
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    stacked: true,
+                    grid: {
+                        display: false
+                    },
+                    ticks: {
+                        autoSkip: false,
+                        maxRotation: 45,
+                        minRotation: 0
+                    }
+                },
+                y: {
+                    stacked: true,
+                    beginAtZero: true,
+                    suggestedMax: maxValue * 1.18,
+                    grid: {
+                        display: false
+                    },
+                    title: {
+                        display: true,
+                        text: "当量（kg）"
+                    },
+                    ticks: {
+                        callback: function(value) {
+                            return Number(value).toLocaleString() + "kg";
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+function renderTrendCharts(trendData) {
+    trendData = Array.isArray(trendData) ? trendData : [];
+
+    const labels = trendData.map(item => item["月份"]);
+    const deliveryValues = trendData.map(item => Number(item["交付金额"] || 0));
+    const inventoryValues = trendData.map(item => Number(item["库存金额"] || 0));
+
+    renderLineChart(
+        "deliveryTrendChart",
+        labels,
+        deliveryValues,
+        "交付金额（亿元）",
+        "#16A34A"
+    );
+
+    renderLineChart(
+        "inventoryTrendChart",
+        labels,
+        inventoryValues,
+        "库存金额（亿元）",
+        "#B45309"
+    );
+}
+
+function renderAgeCharts(ageData) {
+    ageData = Array.isArray(ageData) ? ageData : [];
+
+    const labels = ageData.map(item => item["入库年度"]);
+    const quantities = ageData.map(item => Number(item["产品数量"] || 0));
+    const amounts = ageData.map(item => Number(item["产品金额"] || 0) / 100000000);
+
+    renderBarChart("ageQuantityChart", labels, quantities, "产品数量", "normal");
+    renderBarChart("ageAmountChart", labels, amounts, "产品金额（亿元）", "yi");
+}
+
+function resetFilters() {
+    document.getElementById("keyword").value = "";
+    document.getElementById("warehouse1").value = "成品";
+    document.getElementById("warehouse2").value = "";
+    document.getElementById("warehouse3").value = "";
+    loadData();
+}
+
+loadData();
+setInterval(loadData, 30000);
+</script>
+
+</body>
+</html>
