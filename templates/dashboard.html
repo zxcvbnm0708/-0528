@@ -395,6 +395,14 @@ function renderExplosiveEquivalentChart(id, explosiveData) {
     const hongweiValues = explosiveData.map(item => Number(item["宏伟航空器当量kg"] || 0));
     const limitValues = explosiveData.map(item => Number(item["警戒值kg"] || 0));
     const warningValues = explosiveData.map(item => Number(item["百分之九十警戒值kg"] || 0));
+    const smallWarehouseNames = new Set(["205", "207-1"]);
+    const isSmallWarehouse = labels.map(label => smallWarehouseNames.has(String(label).trim()));
+    const largeNormalValues = normalValues.map((value, index) => isSmallWarehouse[index] ? null : value);
+    const largeHongweiValues = hongweiValues.map((value, index) => isSmallWarehouse[index] ? null : value);
+    const largeLimitValues = limitValues.map((value, index) => isSmallWarehouse[index] ? null : value);
+    const smallNormalValues = normalValues.map((value, index) => isSmallWarehouse[index] ? value : null);
+    const smallHongweiValues = hongweiValues.map((value, index) => isSmallWarehouse[index] ? value : null);
+    const smallLimitValues = limitValues.map((value, index) => isSmallWarehouse[index] ? value : null);
 
     const normalColors = explosiveData.map(item => {
         const actual = Number(item["产品当量kg"] || 0);
@@ -408,8 +416,31 @@ function renderExplosiveEquivalentChart(id, explosiveData) {
     });
 
     const hongweiColors = explosiveData.map(() => "#F59E0B");
+    const smallNormalColors = explosiveData.map((item, index) => {
+        if (!isSmallWarehouse[index]) {
+            return "rgba(0,0,0,0)";
+        }
 
-    const maxValue = Math.max(1, ...limitValues, ...actualValues);
+        const actual = Number(item["产品当量kg"] || 0);
+        const warning = Number(item["百分之九十警戒值kg"] || 0);
+
+        if (warning > 0 && actual >= warning) {
+            return "#DC2626";
+        }
+
+        return "#7C3AED";
+    });
+
+    const largeMaxValue = Math.max(
+        1,
+        ...actualValues.filter((value, index) => !isSmallWarehouse[index]),
+        ...limitValues.filter((value, index) => !isSmallWarehouse[index])
+    );
+    const smallMaxValue = Math.max(
+        1,
+        ...actualValues.filter((value, index) => isSmallWarehouse[index]),
+        ...limitValues.filter((value, index) => isSmallWarehouse[index])
+    );
 
     const canvas = document.getElementById(id);
 
@@ -423,13 +454,15 @@ function renderExplosiveEquivalentChart(id, explosiveData) {
         afterDatasetsDraw(chart) {
             const ctx = chart.ctx;
             const xScale = chart.scales.x;
-            const yScale = chart.scales.y;
+            const largeYScale = chart.scales.y;
+            const smallYScale = chart.scales.ySmall;
 
             ctx.save();
 
             labels.forEach((label, index) => {
                 const actual = actualValues[index] || 0;
                 const warning = warningValues[index] || 0;
+                const yScale = isSmallWarehouse[index] ? smallYScale : largeYScale;
 
                 const x = xScale.getPixelForValue(index);
 
@@ -475,35 +508,74 @@ function renderExplosiveEquivalentChart(id, explosiveData) {
             labels: labels,
             datasets: [
                 {
-                    label: "警戒值上限（kg）",
-                    data: limitValues,
+                    label: "大库房警戒值上限（kg）",
+                    data: largeLimitValues,
                     backgroundColor: "rgba(255,255,255,0)",
                     borderColor: "#9CA3AF",
                     borderWidth: 2,
                     borderSkipped: false,
                     grouped: false,
+                    yAxisID: "y",
                     barPercentage: 0.78,
                     categoryPercentage: 0.78
                 },
                 {
-                    label: "普通产品当量（kg）",
-                    data: normalValues,
+                    label: "205/207-1警戒值上限（kg）",
+                    data: smallLimitValues,
+                    backgroundColor: "rgba(255,255,255,0)",
+                    borderColor: "#7C3AED",
+                    borderWidth: 2,
+                    borderSkipped: false,
+                    grouped: false,
+                    yAxisID: "ySmall",
+                    barPercentage: 0.78,
+                    categoryPercentage: 0.78
+                },
+                {
+                    label: "普通产品当量（大库房，kg）",
+                    data: largeNormalValues,
                     backgroundColor: normalColors,
                     borderColor: normalColors,
-                    stack: "actual",
+                    stack: "largeActual",
                     borderWidth: 1,
                     grouped: false,
+                    yAxisID: "y",
                     barPercentage: 0.52,
                     categoryPercentage: 0.78
                 },
                 {
-                    label: "宏伟航空器当量（kg）",
-                    data: hongweiValues,
+                    label: "宏伟航空器当量（大库房，kg）",
+                    data: largeHongweiValues,
                     backgroundColor: hongweiColors,
                     borderColor: hongweiColors,
-                    stack: "actual",
+                    stack: "largeActual",
                     borderWidth: 1,
                     grouped: false,
+                    yAxisID: "y",
+                    barPercentage: 0.52,
+                    categoryPercentage: 0.78
+                },
+                {
+                    label: "普通产品当量（205/207-1，kg）",
+                    data: smallNormalValues,
+                    backgroundColor: smallNormalColors,
+                    borderColor: smallNormalColors,
+                    stack: "smallActual",
+                    borderWidth: 1,
+                    grouped: false,
+                    yAxisID: "ySmall",
+                    barPercentage: 0.52,
+                    categoryPercentage: 0.78
+                },
+                {
+                    label: "宏伟航空器当量（205/207-1，kg）",
+                    data: smallHongweiValues,
+                    backgroundColor: hongweiColors,
+                    borderColor: hongweiColors,
+                    stack: "smallActual",
+                    borderWidth: 1,
+                    grouped: false,
+                    yAxisID: "ySmall",
                     barPercentage: 0.52,
                     categoryPercentage: 0.78
                 }
@@ -532,7 +604,7 @@ function renderExplosiveEquivalentChart(id, explosiveData) {
                             const limit = limitValues[index] || 0;
                             const warning = warningValues[index] || 0;
 
-                            if (context.dataset.label !== "警戒值上限（kg）") {
+                            if (!context.dataset.label.includes("警戒值上限")) {
                                 return [
                                     "实际当量：" + actual.toFixed(2) + "kg",
                                     "普通产品：" + normal.toFixed(2) + "kg",
@@ -559,10 +631,28 @@ function renderExplosiveEquivalentChart(id, explosiveData) {
                 y: {
                     stacked: true,
                     beginAtZero: true,
-                    suggestedMax: maxValue * 1.18,
+                    suggestedMax: largeMaxValue * 1.18,
                     title: {
                         display: true,
-                        text: "产品当量（kg）"
+                        text: "208/207/270当量（kg）"
+                    },
+                    ticks: {
+                        callback: function(value) {
+                            return Number(value).toLocaleString() + "kg";
+                        }
+                    }
+                },
+                ySmall: {
+                    position: "right",
+                    stacked: true,
+                    beginAtZero: true,
+                    suggestedMax: smallMaxValue * 1.25,
+                    grid: {
+                        drawOnChartArea: false
+                    },
+                    title: {
+                        display: true,
+                        text: "205/207-1当量（kg）"
                     },
                     ticks: {
                         callback: function(value) {
